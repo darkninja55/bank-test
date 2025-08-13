@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>TBank — PWA</title>
+  <meta name="theme-color" content="#16a34a" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <!-- Tailwind via CDN (cached by SW after first load) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body { height: 100%; }
+    .safe-bottom { padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+    .safe-top { padding-top: env(safe-area-inset-top); }
+  </style>
+  <!-- React & Babel (cached by SW) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="h-full bg-neutral-50 text-neutral-900">
+  <div id="root"></div>
+
+  <script>
+    // Register service worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./service-worker.js');
+      });
+    }
+  </script>
+
+  <!-- App (same as mobile demo) -->
+  <script type="text/babel">
+    const { useEffect, useMemo, useState } = React;
+
+    const fmt = (n, currency) => new Intl.NumberFormat(undefined, { style:"currency", currency }).format(n);
+    const uid = () => Math.random().toString(36).slice(2,10);
+    const save = (k,v) => localStorage.setItem(k, JSON.stringify(v));
+    const load = (k,fallback) => { try { const v = localStorage.getItem(k); return v? JSON.parse(v): fallback; } catch { return fallback; } };
+    const nowISO = () => new Date().toISOString();
+    const isIBAN = (s) => /^[A-Z]{2}[0-9A-Z]{13,30}$/i.test(s.replaceAll(" ",""));
+    function toCSV(rows){ if(!rows.length) return ""; const h=Object.keys(rows[0]); const esc=v=>`"${String(v??"").replaceAll('"','""').replaceAll("\\n"," ")}"`; return [h.join(","),...rows.map(r=>h.map(x=>esc(r[x])).join(","))].join("\\n"); }
+
+    const seedStore = {
+      user: { id:"u1", name:"Barno", pin:"1234", currency:"UZS" },
+      accounts: [
+        { id:"a1", name:"Everyday Checking", type:"checking", balance:4500000, currency:"UZS", number:"**** 1023" },
+        { id:"a2", name:"Goal Savings", type:"savings", balance:12000000, currency:"UZS", number:"**** 7781" },
+        { id:"a3", name:"TBank Card", type:"card", balance:-1200000, currency:"UZS", number:"**** 6412", frozen:false, limit:5000000 },
+      ],
+      txns: [
+        { id:uid(), date:nowISO(), type:"income", amount:3000000, description:"Salary", accountId:"a1", category:"Income" },
+        { id:uid(), date:nowISO(), type:"payment", amount:-250000, description:"Internet", accountId:"a1", category:"Utilities" },
+        { id:uid(), date:nowISO(), type:"card", amount:-120000, description:"Coffee", accountId:"a3", category:"Food" },
+      ],
+      payees: [{ id:uid(), name:"Mezon Kengashi", iban:"UZ12 3456 7890 1234 5678 9012", note:"Consulting" }],
+      budgets: { Food:2000000, Transport:1200000, Utilities:800000, Subscriptions:300000 },
+    };
+
+    function App(){
+      const [store, setStore] = useState(() => load("tbank.store", seedStore));
+      const [authed, setAuthed] = useState(() => !!load("tbank.store", seedStore).user);
+      const [tab, setTab] = useState("dashboard");
+      const [dark, setDark] = useState(() => load("tbank.dark", false));
+      useEffect(()=>save("tbank.store", store),[store]);
+      useEffect(()=>save("tbank.dark", dark),[dark]);
+      useEffect(()=>{ if(dark) document.documentElement.classList.add("dark"); else document.documentElement.classList.remove("dark"); },[dark]);
+      const totalBalance = useMemo(()=> store.accounts.reduce((s,a)=>s+a.balance,0), [store.accounts]);
+
+      if(!authed) return <Auth onLogin={(name)=>{ setStore(s=>({ ...s, user:{ ...(s.user??seedStore.user), name }})); setAuthed(true); }} />;
+
+      return (
+        <div className="min-h-screen bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100 safe-bottom">
+          <TopBar user={store.user} dark={dark} onToggleDark={()=>setDark(d=>!d)} />
+          <div className="mx-auto max-w-6xl p-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+              <SummaryCard title="Total balance" value={fmt(totalBalance, store.user.currency)} />
+              <SummaryCard title="Accounts" value={`${store.accounts.length}`} subtitle="active" />
+              <SummaryCard title="This month spend" value={fmt(-monthSpend(store.txns), store.user.currency)} />
+            </div>
+            <MobileTabs tab={tab} setTab={setTab} />
+            <div className="mt-4 rounded-2xl border border-neutral-200/60 dark:border-neutral-800/60 p-4 shadow-sm bg-white dark:bg-neutral-900">
+              {tab==="dashboard" && <Dashboard store={store} setStore={setStore} />}
+              {tab==="transfer" && <Transfer store={store} setStore={setStore} />}
+              {tab==="payments" && <Payments store={store} setStore={setStore} />}
+              {tab==="cards" && <Cards store={store} setStore={setStore} />}
+              {tab==="transactions" && <Transactions store={store} setStore={setStore} />}
+              {tab==="settings" && <Settings store={store} setStore={setStore} />}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function TopBar({ user, dark, onToggleDark }){
+      return (
+        <header className="sticky top-0 z-10 backdrop-blur bg-white/70 dark:bg-neutral-950/70 border-b border-neutral-200/60 dark:border-neutral-800/60 safe-top">
+          <div className="mx-auto max-w-6xl p-4 flex items-center gap-3">
+            <div className="w-9 h-9 rounded-2xl bg-green-600 flex items-center justify-center text-white font-bold">T</div>
+            <div className="font-semibold text-lg">TBank</div>
+            <button onClick={onToggleDark} className="ml-auto px-3 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800">{dark? "Light":"Dark"} mode</button>
+          </div>
+        </header>
+      );
+    }
+
+    function SummaryCard({ title, value, subtitle }){
+      return (
+        <div className="rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200/60 dark:border-neutral-800/60 p-4 shadow-sm">
+          <div className="text-sm text-neutral-500 dark:text-neutral-400">{title}</div>
+          <div className="text-2xl font-semibold mt-1">{value}</div>
+          {subtitle && <div className="text-xs text-neutral-500 mt-1">{subtitle}</div>}
+        </div>
+      );
+    }
+
+    function MobileTabs({ tab, setTab }){
+      const items=[["dashboard","Dashboard"],["transfer","Transfer"],["payments","Payments"],["cards","Cards"],["transactions","History"],["settings","Settings"]];
+      return (
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 safe-bottom bg-white/95 dark:bg-neutral-950/95 border-t border-neutral-200/60 dark:border-neutral-800/60">
+          <div className="grid grid-cols-6 text-xs">
+            {items.map(([k,label])=> (
+              <button key={k} onClick={()=>setTab(k)} className={"py-2 "+(tab===k? "text-green-600 font-medium":"text-neutral-500")}>{label}</button>
+            ))}
+          </div>
+        </nav>
+      );
+    }
+
+    function Dashboard({ store, setStore }){
+      return (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2 space-y-4">
+            <AccountsView store={store} />
+            <QuickActions store={store} setStore={setStore} />
+          </div>
+          <div className="space-y-4">
+            <Budgets store={store} />
+            <MiniFeed txns={store.txns} currency={store.user.currency} />
+          </div>
+        </div>
+      );
+    }
+
+    function AccountsView({ store }){
+      return (
+        <div>
+          <div className="font-semibold mb-2">Accounts</div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {store.accounts.map(a=> (
+              <div key={a.id} className="rounded-xl border border-neutral-200/60 dark:border-neutral-800/60 p-4 bg-gradient-to-br from-white to-neutral-50 dark:from-neutral-900 dark:to-neutral-950">
+                <div className="text-sm text-neutral-500 mb-1">{a.type.toUpperCase()}</div>
+                <div className="font-semibold">{a.name}</div>
+                <div className="text-2xl mt-2">{fmt(a.balance, a.currency)}</div>
+                <div className="text-xs text-neutral-500 mt-1">{a.number}</div>
+                {a.type==="card" && (
+                  <div className="mt-2 text-xs">
+                    <span className={"inline-block px-2 py-1 rounded-lg "+(a.frozen? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200":"bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200")}>{a.frozen? "Frozen":"Active"}</span>
+                    <span className="ml-2 text-neutral-500">Limit: {fmt(a.limit ?? 0, a.currency)}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function QuickActions({ store, setStore }){
+      const [from, setFrom] = React.useState(store.accounts[0]?.id ?? "");
+      const [to, setTo] = React.useState(store.accounts[1]?.id ?? "");
+      const [amount, setAmount] = React.useState(100000);
+      const doQuick = ()=>{
+        if(!from||!to||from===to) return alert("Pick two different accounts");
+        if(amount<=0) return alert("Amount must be positive");
+        setStore(s=>transferInternal(s, from, to, amount, "Quick transfer"));
+        alert("Transferred ✔");
+      };
+      return (
+        <div className="rounded-xl border p-4 border-neutral-200/60 dark:border-neutral-800/60">
+          <div className="font-semibold mb-2">Quick transfer</div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+            <Select label="From" value={from} onChange={setFrom} options={store.accounts.map(a=>({value:a.id, label:`${a.name} (${fmt(a.balance,a.currency)})`}))} />
+            <Select label="To" value={to} onChange={setTo} options={store.accounts.map(a=>({value:a.id, label:`${a.name} (${fmt(a.balance,a.currency)})`}))} />
+            <Input label="Amount" type="number" value={amount} onChange={v=>setAmount(Number(v))} />
+            <button onClick={doQuick} className="h-10 mt-6 rounded-xl bg-green-600 text-white font-medium hover:bg-green-700">Send</button>
+          </div>
+        </div>
+      );
+    }
+
+    function Budgets({ store }){
+      const spentByCat = React.useMemo(()=>{
+        const month = new Date().getMonth();
+        const map={};
+        store.txns.filter(t=> new Date(t.date).getMonth()===month && t.amount<0).forEach(t=>{
+          const k = t.category ?? "Other";
+          map[k]=(map[k]??0)+ -t.amount;
+        });
+        return map;
+      },[store.txns]);
+      return (
+        <div className="rounded-xl border p-4 border-neutral-200/60 dark:border-neutral-800/60">
+          <div className="font-semibold mb-3">Budgets (this month)</div>
+          <div className="space-y-3">
+            {Object.entries(store.budgets).map(([cat,limit])=>{
+              const spent = spentByCat[cat] ?? 0;
+              const pct = Math.min(100, Math.round((spent/limit)*100));
+              return (
+                <div key={cat}>
+                  <div className="flex justify-between text-sm mb-1"><span>{cat}</span><span>{fmt(spent, store.user.currency)} / {fmt(limit, store.user.currency)}</span></div>
+                  <div className="h-2 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                    <div className={"h-2 "+(pct>90?"bg-red-500": pct>70? "bg-amber-500":"bg-green-600")} style={{ width: `${pct}%` }}></div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    function MiniFeed({ txns, currency }){
+      const items = [...txns].sort((a,b)=> +new Date(b.date) - +new Date(a.date)).slice(0,8);
+      return (
+        <div className="rounded-xl border p-4 border-neutral-200/60 dark:border-neutral-800/60">
+          <div className="font-semibold mb-2">Recent activity</div>
+          <div className="divide-y divide-neutral-200/70 dark:divide-neutral-800/70">
+            {items.map(t=>(
+              <div key={t.id} className="py-2 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">{t.description}</div>
+                  <div className="text-xs text-neutral-500">{new Date(t.date).toLocaleString()}</div>
+                </div>
+                <div className={"text-sm font-semibold "+(t.amount<0?"text-red-600":"text-emerald-600")}>{t.amount<0?"-":"+"}{fmt(Math.abs(t.amount), currency)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function Transfer({ store, setStore }){
+      const [kind, setKind] = useState("internal");
+      const [from, setFrom] = useState(store.accounts[0]?.id ?? "");
+      const [to, setTo] = useState(store.accounts[1]?.id ?? "");
+      const [iban, setIban] = useState("");
+      const [benef, setBenef] = useState("");
+      const [amount, setAmount] = useState(0);
+      const [note, setNote] = useState("");
+
+      const submit = ()=>{
+        if(amount<=0) return alert("Amount must be positive");
+        if(kind==="internal"){
+          if(!from || !to || from===to) return alert("Choose two different accounts");
+          setStore(s=>transferInternal(s, from, to, amount, note || "Internal transfer"));
+          alert("Transfer completed ✔");
+        } else {
+          if(!from || !isIBAN(iban)) return alert("Enter a valid IBAN (e.g., UZ00...) ");
+          if(!benef) return alert("Enter beneficiary name");
+          setStore(s=>transferExternal(s, from, amount, note || `Transfer to ${benef}`));
+          alert("External transfer queued ✔ (demo)");
+        }
+      };
+
+      return (
+        <div className="space-y-3">
+          <div className="flex gap-2 flex-wrap">
+            {["internal","external"].map(k=> (
+              <button key={k} onClick={()=>setKind(k)} className={"px-3 py-1.5 rounded-xl border text-sm "+(kind===k?"bg-green-600 text-white border-green-600":"border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800")}>{k==="internal"?"Between my accounts":"To other bank"}</button>
+            ))}
+          </div>
+
+          {kind==="internal"? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Select label="From" value={from} onChange={setFrom} options={store.accounts.map(a=>({ value:a.id, label:`${a.name} (${fmt(a.balance,a.currency)})` }))} />
+              <Select label="To" value={to} onChange={setTo} options={store.accounts.map(a=>({ value:a.id, label:`${a.name} (${fmt(a.balance,a.currency)})` }))} />
+              <Input label="Amount" type="number" value={amount} onChange={v=>setAmount(Number(v))} />
+              <Input label="Note (optional)" value={note} onChange={setNote} />
+              <button onClick={submit} className="md:col-span-2 h-10 rounded-xl bg-green-600 text-white font-medium hover:bg-green-700">Send transfer</button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Select label="From" value={from} onChange={setFrom} options={store.accounts.map(a=>({ value:a.id, label:`${a.name} (${fmt(a.balance,a.currency)})` }))} />
+              <Input label="Beneficiary name" value={benef} onChange={setBenef} />
+              <Input label="Beneficiary IBAN" placeholder="UZ12 3456 ..." value={iban} onChange={setIban} />
+              <Input label="Amount" type="number" value={amount} onChange={v=>setAmount(Number(v))} />
+              <Input label="Note (optional)" value={note} onChange={setNote} />
+              <button onClick={submit} className="md:col-span-2 h-10 rounded-xl bg-green-600 text-white font-medium hover:bg-green-700">Queue transfer</button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function Payments({ store, setStore }){
+      const [from, setFrom] = useState(store.accounts[0]?.id ?? "");
+      const [payeeId, setPayeeId] = useState(store.payees[0]?.id ?? "");
+      const [amount, setAmount] = useState(0);
+      const [memo, setMemo] = useState("");
+      const [adding, setAdding] = useState(false);
+      const [name, setName] = useState("");
+      const [iban, setIban] = useState("");
+
+      const pay = ()=>{
+        if(!from || !payeeId) return alert("Select account and payee");
+        if(amount<=0) return alert("Amount must be positive");
+        const payee = store.payees.find(p=>p.id===payeeId);
+        setStore(s=>transferExternal(s, from, amount, memo || `Bill payment: ${payee.name}`, "Utilities"));
+        alert("Payment sent ✔");
+      };
+
+      const addPayee = ()=>{
+        if(!name || !isIBAN(iban)) return alert("Enter name and valid IBAN");
+        const p = { id: uid(), name, iban, note: "" };
+        setStore(s=>({ ...s, payees: [p, ...s.payees] }));
+        setName(""); setIban(""); setAdding(false);
+      };
+
+      return (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div>
+            <div className="font-semibold mb-2">Pay a bill</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Select label="From" value={from} onChange={setFrom} options={store.accounts.map(a=>({ value:a.id, label:`${a.name} (${fmt(a.balance,a.currency)})` }))} />
+              <Select label="Payee" value={payeeId} onChange={setPayeeId} options={store.payees.map(p=>({ value:p.id, label:`${p.name}` }))} />
+              <Input label="Amount" type="number" value={amount} onChange={v=>setAmount(Number(v))} />
+              <Input label="Memo (optional)" value={memo} onChange={setMemo} />
+              <button onClick={pay} className="md:col-span-2 h-10 rounded-xl bg-green-600 text-white font-medium hover:bg-green-700">Pay</button>
+            </div>
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="font-semibold">Manage payees</div>
+              <button onClick={()=>setAdding(a=>!a)} className="px-3 py-1.5 rounded-xl border border-neutral-300 dark:border-neutral-700 text-sm">{adding ? "Close":"Add"}</button>
+            </div>
+            {adding && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                <Input label="Name" value={name} onChange={setName} />
+                <Input label="IBAN" value={iban} onChange={setIban} placeholder="UZ.." />
+                <button onClick={addPayee} className="md:col-span-2 h-10 rounded-xl bg-green-600 text-white font-medium hover:bg-green-700">Save payee</button>
+              </div>
+            )}
+            <div className="divide-y divide-neutral-200/70 dark:divide-neutral-800/70 rounded-xl border border-neutral-200/60 dark:border-neutral-800/60">
+              {store.payees.map(p=> (
+                <div key={p.id} className="p-3 flex items-center justify-between">
+                  <div>
+                    <div className="font-medium">{p.name}</div>
+                    <div className="text-xs text-neutral-500">{p.iban}</div>
+                  </div>
+                  <button onClick={()=>setStore(s=>({ ...s, payees: s.payees.filter(x=>x.id!==p.id) }))} className="text-sm px-2 py-1 rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800">Remove</button>
+                </div>
+              ))}
+              {!store.payees.length && <div className="p-3 text-sm text-neutral-500">No payees yet</div>}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Cards({ store, setStore }){
+      const card = store.accounts.find(a=>a.type==="card");
+      const [limit, setLimit] = useState(card?.limit ?? 0);
+      if(!card) return <div>No card account</div>;
+      const toggle = ()=> setStore(s=>({ ...s, accounts: s.accounts.map(a=> a.id===card.id? { ...a, frozen: !a.frozen }: a) }));
+      const saveLimit = ()=> setStore(s=>({ ...s, accounts: s.accounts.map(a=> a.id===card.id? { ...a, limit: Math.max(0, limit) }: a) }));
+      return (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="rounded-2xl border border-neutral-200/60 dark:border-neutral-800/60 p-4 bg-gradient-to-br from-green-600 to-emerald-500 text-white">
+            <div className="text-sm opacity-90">TBank • Debit</div>
+            <div className="text-2xl tracking-widest font-semibold mt-6">{card.number}</div>
+            <div className="flex justify-between mt-8 text-sm opacity-90">
+              <div>Cardholder: {store.user.name}</div>
+              <div>Exp: 12/29</div>
+            </div>
+          </div>
+          <div className="space-y-3">
+            <div className="font-semibold">Controls</div>
+            <div className="flex items-center gap-2">
+              <button onClick={toggle} className={"px-3 py-1.5 rounded-xl border text-sm "+(card.frozen? "border-red-400 text-red-700 bg-red-50 dark:bg-red-900/30 dark:text-red-200":"border-emerald-400 text-emerald-700 bg-emerald-50 dark:bg-emerald-900/30 dark:text-emerald-200")}>{card.frozen? "Unfreeze card":"Freeze card"}</button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+              <Input label="Spending limit" type="number" value={limit} onChange={v=>setLimit(Number(v))} />
+              <button onClick={saveLimit} className="h-10 rounded-xl bg-green-600 text-white font-medium hover:bg-green-700 md:col-span-2">Save limit</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Transactions({ store, setStore }){
+      const [q, setQ] = useState("");
+      const [type, setType] = useState("all");
+      const [acc, setAcc] = useState("all");
+      const result = useMemo(()=>{
+        const term = q.trim().toLowerCase();
+        return store.txns.filter(t =>
+          (type==="all" || t.type===type) &&
+          (acc==="all" || t.accountId===acc) &&
+          (!term || `${t.description} ${t.category ?? ""}`.toLowerCase().includes(term))
+        ).sort((a,b)=> +new Date(b.date) - +new Date(a.date));
+      },[store.txns, q, type, acc]);
+
+      const exportCSV = ()=>{
+        const rows = result.map(t => ({
+          date: new Date(t.date).toLocaleString(),
+          type: t.type,
+          amount: t.amount,
+          description: t.description,
+          account: store.accounts.find(a => a.id===t.accountId)?.name ?? "",
+          category: t.category ?? "",
+        }));
+        const csv = toCSV(rows);
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `transactions-${new Date().toISOString().slice(0,10)}.csv`;
+        a.click(); URL.revokeObjectURL(url);
+      };
+
+      return (
+        <div>
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-3 items-end">
+            <Input label="Search" value={q} onChange={setQ} placeholder="Description or category" />
+            <Select label="Type" value={type} onChange={v=>setType(v)} options={[{value:"all",label:"All"}, ..."transfer,payment,card,income,fee".split(",").map(x=>({value:x,label:x}))]} />
+            <Select label="Account" value={acc} onChange={setAcc} options={[{ value:"all", label:"All accounts" }, ...store.accounts.map(a=>({ value:a.id, label:a.name }))]} />
+            <button onClick={exportCSV} className="h-10 rounded-xl bg-neutral-100 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700">Export CSV</button>
+            <button onClick={()=>setStore(seedStore)} className="h-10 rounded-xl border border-neutral-300 dark:border-neutral-700">Reset demo data</button>
+          </div>
+          <div className="overflow-auto rounded-xl border border-neutral-200/60 dark:border-neutral-800/60">
+            <table className="min-w-full text-sm">
+              <thead className="bg-neutral-100 dark:bg-neutral-800 text-left">
+                <tr><th className="p-3">Date</th><th className="p-3">Description</th><th className="p-3">Type</th><th className="p-3">Account</th><th className="p-3 text-right">Amount</th></tr>
+              </thead>
+              <tbody>
+                {result.map(t=> (
+                  <tr key={t.id} className="border-t border-neutral-200/60 dark:border-neutral-800/60">
+                    <td className="p-3 whitespace-nowrap">{new Date(t.date).toLocaleString()}</td>
+                    <td className="p-3">{t.description}</td>
+                    <td className="p-3 capitalize">{t.type}</td>
+                    <td className="p-3">{store.accounts.find(a=>a.id===t.accountId)?.name ?? ""}</td>
+                    <td className={"p-3 text-right font-medium "+(t.amount<0?"text-red-600":"text-emerald-600")}>{t.amount<0?"-":"+"}{fmt(Math.abs(t.amount), store.user.currency)}</td>
+                  </tr>
+                ))}
+                {!result.length && <tr><td className="p-6 text-center text-neutral-500" colSpan="5">No transactions found</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
+    }
+
+    function Settings({ store, setStore }){
+      const [name, setName] = useState(store.user.name);
+      const [pin, setPin] = useState("****");
+      const [currency, setCurrency] = useState(store.user.currency);
+      const saveProfile = ()=>{
+        const u = { ...store.user, name, currency };
+        setStore(s=>({ ...s, user:u, accounts: s.accounts.map(a=>({ ...a, currency })) }));
+        alert("Profile saved ✔");
+      };
+      const changePin = ()=>{
+        if(!/^\d{4}$/.test(pin)) return alert("PIN must be 4 digits");
+        setStore(s=>({ ...s, user:{ ...s.user, pin } }));
+        alert("PIN updated ✔ (demo)");
+      };
+      return (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-3">
+            <div className="font-semibold">Profile</div>
+            <Input label="Your name" value={name} onChange={setName} />
+            <Select label="Currency" value={currency} onChange={setCurrency} options={["UZS","USD","EUR"].map(c=>({ value:c, label:c }))} />
+            <button onClick={saveProfile} className="h-10 rounded-xl bg-green-600 text-white font-medium hover:bg-green-700">Save profile</button>
+          </div>
+          <div className="space-y-3">
+            <div className="font-semibold">Security</div>
+            <Input label="Change PIN" value={pin} onChange={setPin} placeholder="1234" />
+            <button onClick={changePin} className="h-10 rounded-xl border border-neutral-300 dark:border-neutral-700">Update PIN</button>
+          </div>
+        </div>
+      );
+    }
+
+    function Auth({ onLogin }){
+      const [name, setName] = useState("");
+      const [pin, setPin] = useState("");
+      const [error, setError] = useState("");
+      const submit = ()=>{
+        setError("");
+        if(!name || !/^\d{4}$/.test(pin)){ setError("Enter your name and 4‑digit PIN"); return; }
+        onLogin(name);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      };
+      return (
+        <div className="min-h-screen grid place-items-center bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 p-4">
+          <div className="w-full max-w-sm rounded-2xl border border-neutral-200/60 dark:border-neutral-800/60 p-6 bg-white dark:bg-neutral-900 shadow-sm">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-10 h-10 rounded-2xl bg-green-600 text-white font-bold grid place-items-center">T</div>
+              <div className="font-semibold text-xl">TBank</div>
+            </div>
+            <Input label="Your name" value={name} onChange={setName} />
+            <Input label="PIN (4 digits)" value={pin} onChange={setPin} type="password" placeholder="1234" />
+            {error && <div className="text-sm text-red-600 mb-2">{error}</div>}
+            <button onClick={submit} className="w-full h-10 rounded-xl bg-green-600 text-white font-medium hover:bg-green-700">Enter</button>
+            <div className="text-xs text-neutral-500 mt-3">Demo only — no real banking connections.</div>
+          </div>
+        </div>
+      );
+    }
+
+    function Input({ label, value, onChange, type="text", placeholder }){
+      return (
+        <label className="block text-sm">
+          <span className="text-neutral-600 dark:text-neutral-300">{label}</span>
+          <input className="mt-1 w-full h-12 px-3 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-green-600/60 text-base"
+            value={value} onChange={e=>onChange(e.target.value)} type={type} placeholder={placeholder} inputMode={type==="number"?"numeric":undefined} />
+        </label>
+      );
+    }
+
+    function Select({ label, value, onChange, options }){
+      return (
+        <label className="block text-sm">
+          <span className="text-neutral-600 dark:text-neutral-300">{label}</span>
+          <select className="mt-1 w-full h-12 px-3 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-green-600/60 text-base"
+            value={value} onChange={e=>onChange(e.target.value)}>
+            {options.map(o=> <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+      );
+    }
+
+    function transferInternal(s, fromId, toId, amount, note){
+      const from = s.accounts.find(a=>a.id===fromId);
+      const to = s.accounts.find(a=>a.id===toId);
+      if(from.balance < amount){ alert("Insufficient funds"); return s; }
+      const txA = { id:uid(), date:nowISO(), type:"transfer", amount:-amount, description:note, accountId:fromId };
+      const txB = { id:uid(), date:nowISO(), type:"transfer", amount: amount, description:note, accountId:toId };
+      return { ...s, accounts: s.accounts.map(a=> a.id===fromId? { ...a, balance:a.balance-amount }: a.id===toId? { ...a, balance:a.balance+amount }: a), txns: [txA, txB, ...s.txns] };
+    }
+
+    function transferExternal(s, fromId, amount, note, category){
+      const from = s.accounts.find(a=>a.id===fromId);
+      if(from.balance < amount){ alert("Insufficient funds"); return s; }
+      const fee = Math.min(5000, Math.round(amount*0.005));
+      const tx = { id:uid(), date:nowISO(), type:"payment", amount:-amount, description:note, accountId:fromId, category };
+      const feeTxn = { id:uid(), date:nowISO(), type:"fee", amount:-fee, description:"Transfer fee", accountId:fromId, category:"Fees" };
+      return { ...s, accounts: s.accounts.map(a=> a.id===fromId? { ...a, balance:a.balance-amount-fee }: a), txns: [feeTxn, tx, ...s.txns] };
+    }
+
+    function monthSpend(txns){
+      const m = new Date().getMonth();
+      return txns.filter(t=> t.amount<0 && new Date(t.date).getMonth()===m).reduce((s,t)=> s+t.amount, 0);
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

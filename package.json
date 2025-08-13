@@ -1,0 +1,19 @@
+{
+  "name": "tbank-capacitor",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "android:add": "npx cap add android",
+    "sync": "npx cap sync",
+    "open:android": "npx cap open android",
+    "build": "echo 'Web already built in dist/. Use `npm run sync`.'"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2"
+  }
+}
