@@ -27,3 +27,4 @@ npm run open:android
 - For release build & Play Store, create a keystore and sign via Android Studio ("Build > Generate Signed Bundle/APK")."# bank-test" 
 "# bank-test" 
 "# bank-test" 
+"# bank-test" 
